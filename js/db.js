@@ -1,6 +1,18 @@
 // Tiny Promise-based IndexedDB wrapper plus bundle loader.
+//
+// Each entry HTML (pl200/index.html, mb330/index.html, …) sets a global
+// `window.__EXAM = { id, title, dataPath, imageBase }` before this module loads.
+// The DB name and bundle path are derived from it so each exam keeps separate
+// progress and runs.
 
-const DB_NAME = "carolineCertDB";
+const EXAM = (typeof window !== "undefined" && window.__EXAM) || {
+  id: "default",
+  title: "Practice",
+  dataPath: "data/exam.json",
+  imageBase: "data/",
+};
+
+const DB_NAME = `examPracticeDB_${EXAM.id}`;
 const DB_VERSION = 1;
 
 let _dbPromise = null;
@@ -51,22 +63,53 @@ function reqAsync(request) {
   });
 }
 
+function resolveImagePath(p) {
+  if (typeof p !== "string" || !p) return p;
+  // Leave absolute URLs and site-rooted paths alone.
+  if (/^([a-z]+:|\/)/i.test(p)) return p;
+  return (EXAM.imageBase || "") + p;
+}
+
+function resolveBundleImages(bundle) {
+  const base = EXAM.imageBase;
+  if (!base) return;
+  for (const q of bundle.questions) {
+    if (Array.isArray(q.stem_images)) {
+      q.stem_images = q.stem_images.map(resolveImagePath);
+    }
+    if (Array.isArray(q.options)) {
+      for (const o of q.options) if (o.image) o.image = resolveImagePath(o.image);
+    }
+    if (Array.isArray(q.items)) {
+      for (const it of q.items) if (it.image) it.image = resolveImagePath(it.image);
+    }
+    if (Array.isArray(q.rows)) {
+      for (const r of q.rows) if (r.image) r.image = resolveImagePath(r.image);
+    }
+  }
+}
+
 export async function loadBundle() {
   if (_bundle) return _bundle;
-  const res = await fetch("data/exam.json", { cache: "no-cache" });
+  const res = await fetch(EXAM.dataPath, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(
-      `Could not load data/exam.json (HTTP ${res.status}). ` +
+      `Could not load ${EXAM.dataPath} (HTTP ${res.status}). ` +
         `Make sure the parsed bundle is in place — see parser/README.md.`
     );
   }
   _bundle = await res.json();
   if (!Array.isArray(_bundle.questions) || _bundle.questions.length === 0) {
-    throw new Error("exam.json has no questions.");
+    throw new Error(`${EXAM.dataPath} has no questions.`);
   }
+  resolveBundleImages(_bundle);
   // Cheap index for fast lookups.
   _bundle._byId = new Map(_bundle.questions.map((q) => [q.id, q]));
   return _bundle;
+}
+
+export function getExamConfig() {
+  return EXAM;
 }
 
 export function questionById(bundle, id) {

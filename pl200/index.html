@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PL-200 · Caroline Cert Practice</title>
+    <link rel="stylesheet" href="../app.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a href="#/" class="brand">PL-200 Practice</a>
+      <nav class="app-nav">
+        <a href="#/">Dashboard</a>
+        <a href="#/library">All questions</a>
+        <a href="../">← Switch exam</a>
+      </nav>
+    </header>
+    <main id="view" class="view">
+      <div class="loading">Loading…</div>
+    </main>
+    <script>
+      window.__EXAM = {
+        id: "pl200",
+        title: "PL-200",
+        dataPath: "../data/pl200/exam.json",
+        imageBase: "../data/pl200/",
+      };
+    </script>
+    <script type="module" src="../js/main.js"></script>
+  </body>
+</html>

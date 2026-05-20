@@ -1,256 +1,417 @@
-"""Extract draft question entries from the parsed text files.
+"""Extract question candidates from per-page text dumps for an exam.
 
-Strategy:
-- Concatenate all page texts with [PAGE N] markers.
-- Strip per-page header junk (date stamp / URL / page-number).
-- Split on "Question #N" boundaries; track current topic.
-- For each question chunk, classify: MC / multi-select / matching (HOTSPOT or DRAG DROP).
-- Extract stem, options (A/B/C/D/E/F), correct answer, explanation, community vote.
-- Marching questions get rows + options stubs and `_needs_review: true`.
+Phase 3 step 1 of the bundle pipeline. Handles the bulk of work for
+text-based question types (Single/Multi Select, true/false style). For visual
+types (HOTSPOT / Drag-and-Drop / SIMULATION) where the answer area isn't
+represented in the text dump, emits a skeleton record with `needs_visual=true`
+and the source page reference so a second pass can fill in rows/options.
 
-Output: parser/_draft_questions.json — the draft bundle for human review.
+Supports two source formats, picked by source key:
+  s1  → Microsoft official style (Question N. (TYPE), options "A:", explicit
+        Topic + Questions Range markers between questions)
+  s2  → ExamTopics style (Topic N / Question #N, options "A.", optional type
+        marker on its own line like "HOTSPOT -" / "DRAG DROP -" / "SIMULATION -")
+
+Usage:
+    python parser/extract_questions.py mb330
+
+Reads:  parser/_text/<exam>/<srckey>/page_*.txt
+Writes: parser/_draft_questions_<exam>.json
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
+from collections import Counter
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-TEXT = ROOT / "parser" / "_text"
-OUT = ROOT / "parser" / "_draft_questions.json"
+# ---------- regexes ----------
 
-HEADER_LINES_TO_DROP = (
-    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4},.*"),
-    re.compile(r"^PL-200 Exam.*ExamTopics.*"),
-    re.compile(r"^https://www\.examtopics\.com/.*"),
-    re.compile(r"^\d+/\d+$"),
-)
+# Source MB-330.pdf (s1): Microsoft-style.
+S1_QUESTION_HEADER = re.compile(r"^Question (\d+)\.\s*\(([^)]+)\)\s*$")
+S1_OPTION = re.compile(r"^([A-Z]):\s*(.*)$")
+S1_TOPIC_LINE = re.compile(r"^Topic:\s*(.+?)\s*$")
+S1_RANGE_LINE = re.compile(r"^Questions Range:\s*(\d+)\s*-\s*(\d+)\s*$")
+S1_PAGE_FOOTER = re.compile(r"^Page \d+ of \d+\s*$")
 
-OPT_RE = re.compile(r"^([A-F])\.\s*(.+)$")
-CORRECT_RE = re.compile(r"^Correct Answer:\s*([A-F]+)\b\s*(.*)$")
-COMMUNITY_RE = re.compile(r"^Community vote distribution")
-TOPIC_RE = re.compile(r"^Topic\s+(\d+)\b")
-QUESTION_RE = re.compile(r"^Question\s+#(\d+)\b")
-HOTSPOT_RE = re.compile(r"^HOTSPOT\b")
-DRAGDROP_RE = re.compile(r"^DRAG DROP\b")
+# Source ExamTopics PDF (s2).
+S2_TOPIC_HEADER = re.compile(r"^Topic (\d+)(?:\s*-\s*.+)?\s*$")
+S2_QUESTION_HEADER = re.compile(r"^Question #(\d+)\s*$")
+S2_OPTION = re.compile(r"^([A-Z])\.\s+(.*)$")
+S2_TYPE_MARKER = re.compile(r"^(HOTSPOT|DRAG DROP|SIMULATION)(?:\s*-)?\s*$")
+S2_TYPE_DASH = re.compile(r"^-\s*$")
+S2_HEADER_DATE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2}, \d{1,2}:\d{2} [AP]M$")
+S2_HEADER_TITLE = re.compile(r"^[A-Z]{2,3}-\d{3} Exam .+ ExamTopics$")
+S2_HEADER_URL = re.compile(r"^https?://(www\.)?examtopics\.com/")
+S2_HEADER_PAGEREF = re.compile(r"^\d+/\d+\s*$")
+
+# Shared.
+CORRECT_ANSWER = re.compile(r"^Correct Answer:\s*(.*)$")
+EXPLANATION_HDR = re.compile(r"^Explanation:?\s*$", re.IGNORECASE)
+REFERENCE_HDR = re.compile(r"^References?:\s*$", re.IGNORECASE)
+COMMUNITY_VOTE_HDR = re.compile(r"^Community vote distribution\s*$", re.IGNORECASE)
+VOTE_LINE = re.compile(r"^[A-Z]{1,4}\s*\(\d+%\)\s*$")
 
 
-def clean_lines(text: str) -> list[str]:
-    out = []
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line.strip():
-            out.append("")
-            continue
-        skip = False
-        for pat in HEADER_LINES_TO_DROP:
-            if pat.match(line):
-                skip = True
-                break
-        if not skip:
-            out.append(line)
+# ---------- data structures ----------
+
+@dataclass
+class QuestionDraft:
+    source: str
+    source_q_number: int
+    first_page: int
+    raw_type: str
+    type: str
+    needs_visual: bool
+    topic: str = ""
+    stem: str = ""
+    options: list[dict] = field(default_factory=list)
+    correct: list[str] = field(default_factory=list)
+    explanation: str = ""
+    reference: str = ""
+    community_vote: str = ""
+
+
+# ---------- helpers ----------
+
+def detect_canonical_type(raw_type: str, options: list[dict]) -> tuple[str, bool]:
+    r = raw_type.strip().upper().replace("-", " ").replace("_", " ")
+    # Visual types — answer area is laid out as a table/diagram in the PDF, not text.
+    # Following the PL-200 bundle convention, drag-and-drop is mapped to matching too
+    # (most are "drag items into named slots", which is matching semantics).
+    if r in {"HOTSPOT"}:
+        return "matching", True
+    if r in {"DRAG DROP", "DRAG AND DROP", "DRAGDROP"}:
+        return "matching", True
+    if r in {"SIMULATION"}:
+        return "simulation", True
+    # ORDERLIST (s1): user picks N items from a list of M in a specific order. The
+    # existing `ordering` schema expects a full reordering of all items, not a
+    # subset, so we collapse to multi_select (order is lost but the right picks
+    # still grade correctly).
+    if r in {"ORDERLIST", "ORDER LIST"}:
+        return "multi_select", False
+    if r in {"MULTI SELECT", "MULTIPLE SELECT", "MULTISELECT"}:
+        return "multi_select", False
+    if r in {"SINGLE SELECT", "SINGLE CHOICE", "MULTIPLE CHOICE"}:
+        return "multiple_choice", False
+    if options:
+        return "multiple_choice", False
+    return "multiple_choice", True
+
+
+def parse_correct(raw: str) -> list[str]:
+    raw = raw.strip()
+    if not raw:
+        return []
+    if "," in raw:
+        return [tok.strip() for tok in raw.split(",") if tok.strip()]
+    if " " in raw:
+        return [tok.strip() for tok in raw.split() if tok.strip()]
+    if all(c.isalpha() and c.isupper() for c in raw):
+        return list(raw)
+    return [raw]
+
+
+def load_lines(text_dir: Path) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    for path in sorted(text_dir.glob("page_*.txt")):
+        page_num = int(path.stem.split("_")[-1])
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for raw_line in text.splitlines():
+            out.append((page_num, raw_line.rstrip()))
     return out
 
 
-def load_all() -> list[tuple[int, list[str]]]:
-    """Return [(page_num, lines), ...]."""
-    pages = []
-    for f in sorted(TEXT.glob("page_*.txt")):
-        page_num = int(f.stem.split("_")[1])
-        text = f.read_text(encoding="utf-8", errors="replace")
-        pages.append((page_num, clean_lines(text)))
-    return pages
+def is_s1_noise(line: str) -> bool:
+    return bool(S1_PAGE_FOOTER.match(line))
 
 
-def extract_blocks(pages):
-    """Yield (topic, q_num, page_num, lines) for each question block.
-
-    A question block runs from a 'Question #N' line to the next one (or end).
-    """
-    cur_topic = "1"
-    blocks = []
-    cur_block = None  # dict
-    for page_num, lines in pages:
-        for line in lines:
-            tm = TOPIC_RE.match(line)
-            if tm:
-                cur_topic = tm.group(1)
-                continue
-            qm = QUESTION_RE.match(line)
-            if qm:
-                if cur_block is not None:
-                    blocks.append(cur_block)
-                cur_block = {
-                    "topic": cur_topic,
-                    "topic_q": int(qm.group(1)),
-                    "first_page": page_num,
-                    "lines": [],
-                }
-                continue
-            if cur_block is not None:
-                cur_block["lines"].append(line)
-        # End of page; we don't emit blocks until next Question #N or end.
-    if cur_block is not None:
-        blocks.append(cur_block)
-    return blocks
+def is_s2_noise(line: str) -> bool:
+    return bool(
+        S2_HEADER_DATE.match(line)
+        or S2_HEADER_TITLE.match(line)
+        or S2_HEADER_URL.match(line)
+        or S2_HEADER_PAGEREF.match(line)
+    )
 
 
-def parse_block(block, idx):
-    """Turn a block into a draft question record."""
-    lines = block["lines"]
-    is_hotspot = any(HOTSPOT_RE.match(ln) for ln in lines)
-    is_dragdrop = any(DRAGDROP_RE.match(ln) for ln in lines)
+def extract_reference(explanation: str) -> str:
+    m = re.search(r"https?://\S+", explanation)
+    return m.group(0) if m else ""
 
-    # Find boundaries.
-    correct_idx = None
-    community_idx = None
-    for i, ln in enumerate(lines):
-        if CORRECT_RE.match(ln) and correct_idx is None:
-            correct_idx = i
-        if COMMUNITY_RE.match(ln) and community_idx is None:
-            community_idx = i
 
-    # Stem = lines before first option (for MC) OR before "Correct Answer:" (for HOTSPOT).
-    options = []
-    first_opt_idx = None
-    if not (is_hotspot or is_dragdrop):
-        for i, ln in enumerate(lines):
-            if correct_idx is not None and i >= correct_idx:
-                break
-            m = OPT_RE.match(ln)
-            if m:
-                if first_opt_idx is None:
-                    first_opt_idx = i
-                # Multi-line options: append following non-option, non-correct lines.
-                opt_text = m.group(2).strip()
-                options.append({"id": m.group(1), "text": opt_text})
-            elif options and ln.strip() and not OPT_RE.match(ln):
-                # continuation of previous option (next plain line)
-                options[-1]["text"] += " " + ln.strip()
+# ---------- s1 (Microsoft format) ----------
 
-    stem_lines = lines[: (first_opt_idx if first_opt_idx is not None else (correct_idx if correct_idx is not None else len(lines)))]
-    # Collapse paragraph breaks: keep \n only between non-adjacent text blocks.
-    stem = "\n".join(s for s in stem_lines if s.strip()).strip()
-    # Tighten line-wrap whitespace within paragraphs (PDF often breaks mid-sentence).
-    # Heuristic: join lines that don't end in punctuation and aren't empty.
+def extract_s1(text_dir: Path) -> list[QuestionDraft]:
+    lines = load_lines(text_dir)
+    lines = [(p, l) for (p, l) in lines if not is_s1_noise(l)]
 
-    # Correct answer.
-    correct_letters = ""
-    if correct_idx is not None:
-        m = CORRECT_RE.match(lines[correct_idx])
+    headers: list[tuple[int, int, str, int]] = []
+    for i, (page, line) in enumerate(lines):
+        m = S1_QUESTION_HEADER.match(line)
         if m:
-            correct_letters = m.group(1)
+            headers.append((i, int(m.group(1)), m.group(2), page))
 
-    # Explanation: between correct line+1 and community line (or block end).
-    expl_end = community_idx if community_idx is not None else len(lines)
-    expl_start = (correct_idx + 1) if correct_idx is not None else expl_end
-    # Some Correct Answer lines have trailing text on the same line.
-    inline_correct_tail = ""
-    if correct_idx is not None:
-        m = CORRECT_RE.match(lines[correct_idx])
-        if m and m.group(2).strip():
-            inline_correct_tail = m.group(2).strip()
-    explanation_lines = ([inline_correct_tail] if inline_correct_tail else []) + lines[expl_start:expl_end]
-    explanation = " ".join(s.strip() for s in explanation_lines if s.strip())
-    explanation = re.sub(r"\s+", " ", explanation).strip()
-    if not explanation:
-        explanation = None
+    drafts: list[QuestionDraft] = []
+    for h_idx, (start_i, qnum, raw_type, start_page) in enumerate(headers):
+        end_i = headers[h_idx + 1][0] if h_idx + 1 < len(headers) else len(lines)
+        drafts.append(parse_s1_block(lines[start_i + 1:end_i], qnum, raw_type, start_page))
+    return drafts
 
-    # Community vote (just include verbatim if present).
-    community = None
-    if community_idx is not None:
-        cv_lines = []
-        for ln in lines[community_idx + 1 :]:
-            if not ln.strip():
-                if cv_lines:
+
+def parse_s1_block(
+    block_lines: list[tuple[int, str]], qnum: int, raw_type: str, first_page: int
+) -> QuestionDraft:
+    stem_lines: list[str] = []
+    options: list[dict] = []
+    correct: list[str] = []
+    explanation_lines: list[str] = []
+    topic = ""
+    in_options = False
+    in_explanation = False
+    saw_correct = False
+    current_option_id: str | None = None
+
+    for _page, line in block_lines:
+        m_topic = S1_TOPIC_LINE.match(line)
+        if m_topic:
+            topic = m_topic.group(1).strip()
+            in_explanation = False
+            continue
+        if S1_RANGE_LINE.match(line):
+            in_explanation = False
+            continue
+
+        m_corr = CORRECT_ANSWER.match(line)
+        if m_corr:
+            saw_correct = True
+            in_options = False
+            correct = parse_correct(m_corr.group(1))
+            continue
+
+        if EXPLANATION_HDR.match(line) or REFERENCE_HDR.match(line):
+            in_explanation = True
+            continue
+
+        m_opt = S1_OPTION.match(line)
+        if m_opt and not in_explanation and not saw_correct:
+            in_options = True
+            current_option_id = m_opt.group(1)
+            options.append({"id": current_option_id, "text": m_opt.group(2).strip()})
+            continue
+
+        if in_options and not saw_correct and current_option_id and line.strip():
+            options[-1]["text"] = (options[-1]["text"] + " " + line.strip()).strip()
+            continue
+
+        if in_explanation:
+            if line.strip():
+                explanation_lines.append(line.strip())
+            continue
+
+        if not in_options and not saw_correct and line.strip():
+            stem_lines.append(line)
+
+    canonical_type, needs_visual = detect_canonical_type(raw_type, options)
+    if canonical_type == "multi_select" and len(correct) <= 1:
+        canonical_type = "multiple_choice"
+    elif canonical_type == "multiple_choice" and len(correct) > 1:
+        canonical_type = "multi_select"
+
+    explanation = "\n".join(explanation_lines).strip()
+    return QuestionDraft(
+        source="s1",
+        source_q_number=qnum,
+        first_page=first_page,
+        raw_type=raw_type,
+        type=canonical_type,
+        needs_visual=needs_visual,
+        topic=topic,
+        stem="\n".join(stem_lines).strip(),
+        options=options,
+        correct=correct,
+        explanation=explanation,
+        reference=extract_reference(explanation),
+        community_vote="",
+    )
+
+
+# ---------- s2 (ExamTopics format) ----------
+
+def extract_s2(text_dir: Path) -> list[QuestionDraft]:
+    lines = load_lines(text_dir)
+    lines = [(p, l) for (p, l) in lines if not is_s2_noise(l)]
+
+    current_topic = ""
+    headers: list[tuple[int, int, int, str]] = []
+    for i, (page, line) in enumerate(lines):
+        if S2_TOPIC_HEADER.match(line):
+            current_topic = line.strip()
+            continue
+        m_q = S2_QUESTION_HEADER.match(line)
+        if m_q:
+            headers.append((i, int(m_q.group(1)), page, current_topic))
+
+    drafts: list[QuestionDraft] = []
+    for h_idx, (start_i, qnum, start_page, topic) in enumerate(headers):
+        end_i = headers[h_idx + 1][0] if h_idx + 1 < len(headers) else len(lines)
+        drafts.append(parse_s2_block(lines[start_i + 1:end_i], qnum, start_page, topic))
+    return drafts
+
+
+def parse_s2_block(
+    block_lines: list[tuple[int, str]], qnum: int, first_page: int, topic: str
+) -> QuestionDraft:
+    raw_type = "Single Select"
+    leading_idx = 0
+    # Scan the first non-empty line for a type marker; the dash may live on a
+    # separate line in the text dump.
+    for i, (_p, line) in enumerate(block_lines):
+        if line.strip():
+            m_type = S2_TYPE_MARKER.match(line)
+            if m_type:
+                raw_type = m_type.group(1)
+                leading_idx = i + 1
+                # If the next non-empty line is just "-", consume it too.
+                for j in range(leading_idx, len(block_lines)):
+                    nxt = block_lines[j][1]
+                    if not nxt.strip():
+                        continue
+                    if S2_TYPE_DASH.match(nxt):
+                        leading_idx = j + 1
                     break
-                continue
-            cv_lines.append(ln.strip())
-            if len(cv_lines) >= 4:
-                break
-        if cv_lines:
-            community = " / ".join(cv_lines)
+            break
 
-    qid = f"q{idx:04d}"
+    body = block_lines[leading_idx:]
+    stem_lines: list[str] = []
+    options: list[dict] = []
+    correct: list[str] = []
+    explanation_lines: list[str] = []
+    vote_lines: list[str] = []
+    in_options = False
+    in_explanation = False
+    in_votes = False
+    saw_correct = False
+    current_option_id: str | None = None
 
-    if is_hotspot or is_dragdrop:
-        # Drop leading HOTSPOT / DRAG DROP marker line; we re-add a clean prefix.
-        clean_stem_lines = []
-        skip_marker = True
-        for ln in stem_lines:
-            if skip_marker and (HOTSPOT_RE.match(ln) or DRAGDROP_RE.match(ln) or ln.strip() in ("-", "")):
-                continue
-            skip_marker = False
-            clean_stem_lines.append(ln)
-        # Also drop standalone "Hot Area:" / "Select and Place:" markers from stem
-        clean_stem_lines = [
-            ln for ln in clean_stem_lines
-            if ln.strip() not in ("Hot Area:", "Select and Place:", "Correct Answer:")
-        ]
-        clean_stem = " ".join(s.strip() for s in clean_stem_lines if s.strip())
-        clean_stem = re.sub(r"\s+", " ", clean_stem).strip()
-        prefix = "HOTSPOT — " if is_hotspot else "DRAG DROP — "
-        return {
-            "id": qid,
-            "topic": block["topic"],
-            "topic_q": block["topic_q"],
-            "first_page": block["first_page"],
-            "type": "matching",
-            "stem": prefix + clean_stem,
-            "stem_images": [],
-            "rows": [],
-            "options": [],
-            "correct_matching": {},
-            "explanation": explanation,
-            "community_vote": community,
-            "_needs_review": True,
-            "_kind": "HOTSPOT" if is_hotspot else "DRAG DROP",
-        }
+    for _page, line in body:
+        if S2_TOPIC_HEADER.match(line):
+            break
 
-    # MC vs multi-select: multi-select if correct_letters has >1 char.
-    qtype = "multi_select" if len(correct_letters) > 1 else "multiple_choice"
-    correct = list(correct_letters) if correct_letters else []
+        m_corr = CORRECT_ANSWER.match(line)
+        if m_corr:
+            saw_correct = True
+            in_options = False
+            in_explanation = True
+            correct = parse_correct(m_corr.group(1))
+            continue
 
-    return {
-        "id": qid,
-        "topic": block["topic"],
-        "topic_q": block["topic_q"],
-        "first_page": block["first_page"],
-        "type": qtype,
-        "stem": stem,
-        "stem_images": [],
-        "options": [{"id": o["id"], "text": o["text"]} for o in options],
-        "correct": correct,
-        "explanation": explanation,
-        "community_vote": community,
-        "_needs_review": False if (correct and options) else True,
-    }
+        if COMMUNITY_VOTE_HDR.match(line):
+            in_votes = True
+            in_explanation = False
+            continue
+
+        if REFERENCE_HDR.match(line):
+            in_explanation = True
+            continue
+
+        if in_votes:
+            if VOTE_LINE.match(line):
+                vote_lines.append(line.strip())
+            continue
+
+        m_opt = S2_OPTION.match(line)
+        if m_opt and not saw_correct and not in_explanation:
+            in_options = True
+            current_option_id = m_opt.group(1)
+            options.append({"id": current_option_id, "text": m_opt.group(2).strip()})
+            continue
+
+        if in_options and not saw_correct and current_option_id and line.strip():
+            options[-1]["text"] = (options[-1]["text"] + " " + line.strip()).strip()
+            continue
+
+        if in_explanation:
+            if line.strip():
+                explanation_lines.append(line.strip())
+            continue
+
+        if not in_options and not saw_correct and line.strip():
+            stem_lines.append(line)
+
+    canonical_type, needs_visual = detect_canonical_type(raw_type, options)
+    if canonical_type == "multiple_choice" and len(correct) > 1:
+        canonical_type = "multi_select"
+    elif canonical_type == "multi_select" and len(correct) <= 1:
+        canonical_type = "multiple_choice"
+
+    explanation = "\n".join(explanation_lines).strip()
+    return QuestionDraft(
+        source="s2",
+        source_q_number=qnum,
+        first_page=first_page,
+        raw_type=raw_type,
+        type=canonical_type,
+        needs_visual=needs_visual,
+        topic=topic,
+        stem="\n".join(stem_lines).strip(),
+        options=options,
+        correct=correct,
+        explanation=explanation,
+        reference=extract_reference(explanation),
+        community_vote=" / ".join(vote_lines),
+    )
 
 
-def main():
-    pages = load_all()
-    blocks = extract_blocks(pages)
-    print(f"blocks: {len(blocks)}")
-    questions = []
-    for i, b in enumerate(blocks, start=1):
-        q = parse_block(b, i)
-        questions.append(q)
+# ---------- main ----------
 
-    # Quick sanity counts.
-    by_type = {}
-    needs_review = 0
-    for q in questions:
-        by_type[q["type"]] = by_type.get(q["type"], 0) + 1
-        if q.get("_needs_review"):
-            needs_review += 1
-    print("by type:", by_type)
-    print(f"needs review: {needs_review}")
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("exam_id", help="Exam id (e.g. mb330)")
+    ap.add_argument(
+        "--project-root",
+        default=str(Path(__file__).resolve().parent.parent),
+        help="Project root (default: parent of parser/)",
+    )
+    args = ap.parse_args()
 
-    OUT.write_text(json.dumps(questions, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"wrote {OUT}")
+    root = Path(args.project_root).resolve()
+    text_root = root / "parser" / "_text" / args.exam_id
+    if not text_root.exists():
+        print(f"No text dumps at {text_root}", file=sys.stderr)
+        return 2
+
+    all_drafts: list[QuestionDraft] = []
+    for src_dir in sorted(text_root.iterdir()):
+        if not src_dir.is_dir():
+            continue
+        srckey = src_dir.name
+        print(f"Extracting from {srckey}...")
+        if srckey == "s1":
+            drafts = extract_s1(src_dir)
+        elif srckey == "s2":
+            drafts = extract_s2(src_dir)
+        else:
+            print(f"  (no extractor for source {srckey}, skipping)")
+            continue
+        print(f"  got {len(drafts)} questions")
+        all_drafts.extend(drafts)
+
+    counts = Counter((d.source, d.type, d.needs_visual) for d in all_drafts)
+    print("\nBy (source, canonical_type, needs_visual):")
+    for k, v in sorted(counts.items()):
+        print(f"  {k}: {v}")
+
+    out_path = root / "parser" / f"_draft_questions_{args.exam_id}.json"
+    payload = {"exam_id": args.exam_id, "drafts": [asdict(d) for d in all_drafts]}
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\nWrote {out_path} with {len(all_drafts)} drafts.")
+    return 0
 
 
 if __name__ == "__main__":

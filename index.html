@@ -8,15 +8,21 @@
   </head>
   <body>
     <header class="app-header">
-      <a href="#/" class="brand">Caroline Cert Practice</a>
-      <nav class="app-nav">
-        <a href="#/">Dashboard</a>
-        <a href="#/library">All questions</a>
-      </nav>
+      <span class="brand">Caroline Cert Practice</span>
     </header>
-    <main id="view" class="view">
-      <div class="loading">Loading…</div>
+    <main class="view">
+      <h1>Pick an exam</h1>
+      <p class="muted">Each exam keeps its own question pool and progress.</p>
+      <div class="exam-picker">
+        <a class="exam-card" href="pl200/">
+          <div class="code">PL-200</div>
+          <div class="name">Microsoft Power Platform Functional Consultant</div>
+        </a>
+        <a class="exam-card" href="mb330/">
+          <div class="code">MB-330</div>
+          <div class="name">Microsoft Dynamics 365 Supply Chain Management Functional Consultant</div>
+        </a>
+      </div>
     </main>
-    <script type="module" src="js/main.js"></script>
   </body>
 </html>

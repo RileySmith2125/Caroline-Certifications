@@ -5,17 +5,17 @@
 parser/_pages/
 parser/_pages_small/
 parser/_text/
-parser/_manifest.json
-parser/_draft_questions.json
+parser/_manifest*.json
+parser/_draft_questions*.json
 parser/_batch_*.txt
 parser/_batch_*_result.json
 parser/_matching_batches.json
 parser/__pycache__/
 
-# Extracted images aren't currently referenced from exam.json (every question has
-# stem_images: []). Excluding to keep the repo small. If we later attach images
+# Extracted images aren't (yet) referenced from exam.json — every question has
+# stem_images: []. Excluding to keep the repo small. If we later attach images
 # to specific questions, commit those individual files explicitly.
-data/img/
+data/*/img/
 
 # Claude Code local settings
 .claude/

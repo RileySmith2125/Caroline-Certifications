@@ -330,3 +330,24 @@ button.ghost  { background: transparent; }
 .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 h1, h2, h3 { margin: 0.25rem 0 0.5rem; }
 hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+
+/* Landing page exam picker */
+.exam-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.85rem;
+  margin-top: 1.5rem;
+}
+.exam-card {
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.4rem;
+  color: var(--text);
+  text-decoration: none;
+  transition: background 80ms, border-color 80ms;
+}
+.exam-card:hover { background: var(--panel-2); border-color: var(--accent); text-decoration: none; }
+.exam-card .code { font-size: 1.4rem; font-weight: 700; letter-spacing: 0.3px; color: var(--accent); }
+.exam-card .name { color: var(--muted); margin-top: 0.25rem; font-size: 0.95rem; }

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MB-330 · Caroline Cert Practice</title>
+    <link rel="stylesheet" href="../app.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a href="#/" class="brand">MB-330 Practice</a>
+      <nav class="app-nav">
+        <a href="#/">Dashboard</a>
+        <a href="#/library">All questions</a>
+        <a href="../">← Switch exam</a>
+      </nav>
+    </header>
+    <main id="view" class="view">
+      <div class="loading">Loading…</div>
+    </main>
+    <script>
+      window.__EXAM = {
+        id: "mb330",
+        title: "MB-330",
+        dataPath: "../data/mb330/exam.json",
+        imageBase: "../data/mb330/",
+      };
+    </script>
+    <script type="module" src="../js/main.js"></script>
+  </body>
+</html>
