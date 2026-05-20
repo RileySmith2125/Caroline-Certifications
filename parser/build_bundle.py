@@ -75,6 +75,50 @@ def normalize_for_match(text: str) -> str:
     return s
 
 
+SENTENCE_END = (".", "!", "?", ":", ";")
+
+
+def reflow_text(text: str) -> str:
+    """Join mid-sentence line wraps with a space. Keeps line breaks where the
+    line clearly ends a sentence (terminal punctuation), so multi-sentence
+    stems stay readable.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    buf = ""
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append("")
+            continue
+        if not buf:
+            buf = line
+        elif buf.endswith(SENTENCE_END):
+            out.append(buf)
+            buf = line
+        else:
+            buf = buf + " " + line
+    if buf:
+        out.append(buf)
+    # Collapse adjacent blank lines into single ones.
+    cleaned: list[str] = []
+    prev_blank = False
+    for s in out:
+        if not s:
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        cleaned.append(s)
+    return "\n".join(cleaned).strip()
+
+
 def dedup_key(draft: dict) -> str:
     """Combined comparison key: normalized stem + sorted option texts + correct letters.
     Two questions are duplicates only if all three agree (within threshold). This
@@ -111,6 +155,9 @@ def to_question_record(draft: dict, qid: str) -> dict | None:
     """Convert a draft into a final question record matching the bundle schema.
     Returns None if the draft can't be reasonably included (missing critical data)."""
     t = draft["type"]
+    explanation = draft.get("explanation") or None
+    if explanation:
+        explanation = reflow_text(explanation)
     base = {
         "id": qid,
         "source": draft["source"],
@@ -118,25 +165,28 @@ def to_question_record(draft: dict, qid: str) -> dict | None:
         "first_page": draft["first_page"],
         "topic": draft.get("topic", ""),
         "type": t,
-        "stem": draft.get("stem", "").strip(),
+        "stem": reflow_text(draft.get("stem", "")),
         "stem_images": [],
-        "explanation": draft.get("explanation") or None,
+        "explanation": explanation,
         "community_vote": draft.get("community_vote") or None,
     }
     if not base["stem"]:
         return None
 
+    def clean_options(opts):
+        return [{"id": o["id"], "text": reflow_text(o["text"])} for o in opts]
+
     if t == "multiple_choice":
         if not draft.get("options") or not draft.get("correct"):
             return None
-        base["options"] = [{"id": o["id"], "text": o["text"]} for o in draft["options"]]
+        base["options"] = clean_options(draft["options"])
         base["correct"] = list(draft["correct"])
         return base
 
     if t == "multi_select":
         if not draft.get("options") or not draft.get("correct"):
             return None
-        base["options"] = [{"id": o["id"], "text": o["text"]} for o in draft["options"]]
+        base["options"] = clean_options(draft["options"])
         base["correct"] = list(draft["correct"])
         return base
 
