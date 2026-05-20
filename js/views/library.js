@@ -237,6 +237,94 @@ function renderInputForPractice(question, state, rerender) {
     return ul;
   }
 
+  if (question.type === "ordering_select") {
+    const picks = Array.isArray(state.userAnswer) ? [...state.userAnswer] : [];
+    const pool = question.pool || [];
+    const poolMap = new Map(pool.map((p) => [p.id, p]));
+    const targetLen = (question.correct_order || []).length || picks.length || pool.length;
+    const correctOrder = question.correct_order || [];
+
+    const wrap = el("div", { class: "ordering-select" });
+    wrap.appendChild(
+      el(
+        "div",
+        { class: "muted", style: "font-size:0.9rem;margin-bottom:0.4rem;" },
+        state.checked
+          ? `Your sequence vs. correct sequence:`
+          : `Pick ${targetLen} in order. Click an item below to add it; click a slot to remove.`
+      )
+    );
+
+    const slots = el("ol", { class: "ordering-list" });
+    for (let i = 0; i < targetLen; i++) {
+      const picked = picks[i];
+      const item = picked != null ? poolMap.get(picked) : null;
+      const correctId = correctOrder[i];
+      const cls = ["ordering-item"];
+      if (state.checked) {
+        if (picked && picked === correctId) cls.push("correct");
+        else cls.push("wrong");
+      } else if (!picked) {
+        cls.push("empty");
+      }
+      const li = el(
+        "li",
+        {
+          class: cls.join(" "),
+          onclick: () => {
+            if (state.checked || picked == null) return;
+            picks.splice(i, 1);
+            setAnswer([...picks]);
+          },
+        },
+        el("span", { class: "num" }, `${i + 1}.`),
+        el("span", { class: "opt-body" }, item ? item.text || item.id : "—"),
+        state.checked && correctId && picked !== correctId
+          ? el(
+              "div",
+              { class: "muted", style: "margin-top:0.2rem;font-size:0.85rem;" },
+              `Correct: ${(poolMap.get(correctId)?.text) || correctId}`
+            )
+          : null
+      );
+      slots.appendChild(li);
+    }
+    wrap.appendChild(slots);
+
+    if (!state.checked) {
+      wrap.appendChild(
+        el(
+          "div",
+          { class: "muted", style: "font-size:0.85rem;margin-top:0.75rem;margin-bottom:0.4rem;" },
+          "Available actions"
+        )
+      );
+      const pickedSet = new Set(picks);
+      const poolList = el("div", { class: "options" });
+      for (const item of pool) {
+        const used = pickedSet.has(item.id);
+        const optionEl = el(
+          "label",
+          {
+            class: "option" + (used ? " expected" : ""),
+            style: used ? "opacity:0.45; cursor:not-allowed;" : "",
+            onclick: () => {
+              if (used || picks.length >= targetLen) return;
+              picks.push(item.id);
+              setAnswer([...picks]);
+            },
+          },
+          el("span", { class: "opt-id" }, `${item.id}.`),
+          el("span", { class: "opt-body" }, item.text || "")
+        );
+        poolList.appendChild(optionEl);
+      }
+      wrap.appendChild(poolList);
+    }
+
+    return wrap;
+  }
+
   if (question.type === "matching") {
     const expected = question.correct_matching || {};
     const cur =
@@ -389,15 +477,15 @@ export async function renderLibraryQuestion(root, bundle, qidEncoded) {
             el("span", { class: "lbl" }, "Your answer:"),
             formatAnswer(question, state.userAnswer)
           ),
-          !r.correct && question.type !== "matching"
+          !r.correct &&
+          question.type !== "matching" &&
+          question.type !== "ordering" &&
+          question.type !== "ordering_select"
             ? el(
                 "div",
                 { class: "answer-row" },
                 el("span", { class: "lbl" }, "Correct answer:"),
-                formatAnswer(
-                  question,
-                  question.type === "ordering" ? question.correct_order : question.correct
-                )
+                formatAnswer(question, question.correct)
               )
             : null
         ),

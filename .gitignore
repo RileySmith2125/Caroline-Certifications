@@ -10,7 +10,14 @@ parser/_draft_questions*.json
 parser/_batch_*.txt
 parser/_batch_*_result.json
 parser/_matching_batches.json
+parser/_visual_batch_*.json
+parser/_visual_queue_*.json
+parser/_visual_questions_*.json
+parser/_tmp_*
+parser/_crops*
 parser/__pycache__/
+# Temporary crops agents create at the project root while doing visual extraction.
+_tmp_*.png
 
 # Extracted images aren't (yet) referenced from exam.json — every question has
 # stem_images: []. Excluding to keep the repo small. If we later attach images

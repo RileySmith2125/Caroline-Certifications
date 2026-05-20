@@ -98,6 +98,24 @@ function reviewOrdering(question, userAnswer) {
   return wrap;
 }
 
+function reviewOrderingSelect(question, userAnswer) {
+  const poolMap = new Map((question.pool || []).map((p) => [p.id, p]));
+  const wrap = el("div", { class: "row", style: "align-items:flex-start;gap:1.5rem;" });
+  function col(title, ids) {
+    const c = el("div", { style: "flex:1;min-width:160px;" }, el("div", { class: "muted" }, title));
+    const ol = el("ol", { style: "padding-left:1.2rem;" });
+    (ids || []).forEach((id) => {
+      const it = poolMap.get(id);
+      ol.appendChild(el("li", {}, it ? it.text : `(unknown ${id})`));
+    });
+    c.appendChild(ol);
+    return c;
+  }
+  wrap.appendChild(col("Your order", Array.isArray(userAnswer) ? userAnswer : []));
+  wrap.appendChild(col("Correct order", question.correct_order));
+  return wrap;
+}
+
 export async function renderResults(root, bundle, runId) {
   const run = await getExamRun(runId);
   if (!run) {
@@ -159,6 +177,8 @@ export async function renderResults(root, bundle, runId) {
     }
     if (q.type === "ordering") {
       card.appendChild(reviewOrdering(q, item.user_answer));
+    } else if (q.type === "ordering_select") {
+      card.appendChild(reviewOrderingSelect(q, item.user_answer));
     } else if (q.type === "matching") {
       card.appendChild(reviewMatching(q, item.user_answer));
     } else {
@@ -172,17 +192,14 @@ export async function renderResults(root, bundle, runId) {
         formatAnswer(q, item.user_answer)
       )
     );
-    if (!item.correct && q.type !== "matching") {
-      // matching shows per-row correct answers inline above
+    if (!item.correct && q.type !== "matching" && q.type !== "ordering_select" && q.type !== "ordering") {
+      // matching / ordering* views show per-row / per-position correct answers inline above
       card.appendChild(
         el(
           "div",
           { class: "answer-row" },
           el("span", { class: "lbl" }, "Correct answer:"),
-          formatAnswer(
-            q,
-            q.type === "ordering" ? q.correct_order : q.correct
-          )
+          formatAnswer(q, q.correct)
         )
       );
     }

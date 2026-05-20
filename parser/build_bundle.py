@@ -120,18 +120,22 @@ def reflow_text(text: str) -> str:
 
 
 def dedup_key(draft: dict) -> str:
-    """Combined comparison key: normalized stem + sorted option texts + correct letters.
+    """Combined comparison key: normalized stem + sorted option/pool texts + correct.
     Two questions are duplicates only if all three agree (within threshold). This
     prevents case-study questions that share stem boilerplate but differ in their
     actual options/answers from being collapsed."""
     stem = normalize_for_match(draft.get("stem", ""))
     opt_texts = []
-    for o in draft.get("options", []) or []:
+    source_opts = draft.get("options") or draft.get("pool") or []
+    for o in source_opts:
         ot = normalize_for_match(o.get("text", ""))
         if ot:
             opt_texts.append(ot)
     opt_texts.sort()
-    correct = ",".join(sorted(draft.get("correct", []) or []))
+    if draft.get("type") == "ordering_select":
+        correct = ",".join(draft.get("correct_order", []) or [])  # order matters
+    else:
+        correct = ",".join(sorted(draft.get("correct", []) or []))
     return f"{stem} || {' | '.join(opt_texts)} || {correct}"
 
 
@@ -202,6 +206,14 @@ def to_question_record(draft: dict, qid: str) -> dict | None:
     if t == "ordering":
         base["items"] = draft.get("items", []) or []
         base["correct_order"] = draft.get("correct_order", []) or []
+        return base
+
+    if t == "ordering_select":
+        pool = draft.get("pool") or []
+        if not pool or not draft.get("correct_order"):
+            return None
+        base["pool"] = [{"id": p["id"], "text": reflow_text(p["text"])} for p in pool]
+        base["correct_order"] = list(draft["correct_order"])
         return base
 
     if t == "simulation":
@@ -285,20 +297,21 @@ def main() -> int:
     print(f"Loaded {len(drafts)} drafts.")
 
     # Optional: overlay visual pass results onto the matching drafts.
+    # Key by (source, source_q_number, first_page) — s2 ExamTopics restarts
+    # Question #N per Topic, so source_q_number alone collides.
     visual_path = root / "parser" / f"_visual_questions_{args.exam_id}.json"
-    visual_map: dict[tuple[str, int], dict] = {}
+    visual_map: dict[tuple[str, int, int], dict] = {}
     if visual_path.exists():
         visual_data = json.loads(visual_path.read_text(encoding="utf-8")).get("questions", [])
         for v in visual_data:
-            key = (v["source"], v["source_q_number"])
+            key = (v["source"], int(v["source_q_number"]), int(v.get("first_page", -1)))
             visual_map[key] = v
         print(f"Loaded {len(visual_map)} visual-pass entries from {visual_path.name}.")
         for d in drafts:
-            key = (d["source"], d["source_q_number"])
+            key = (d["source"], int(d["source_q_number"]), int(d.get("first_page", -1)))
             v = visual_map.get(key)
             if not v:
                 continue
-            # Overlay structural fields produced by the visual pass.
             for field_name in ("rows", "options", "correct_matching", "items", "correct_order"):
                 if field_name in v:
                     d[field_name] = v[field_name]
@@ -310,9 +323,12 @@ def main() -> int:
         drafts = [d for d in drafts if not d.get("needs_visual")]
         print(f"--skip-visual: dropped {before - len(drafts)} visual questions.")
     elif not args.include_visual_stubs:
-        # Default: drop needs_visual ones that haven't been filled in.
         before = len(drafts)
-        drafts = [d for d in drafts if not d.get("needs_visual") or visual_map.get((d["source"], d["source_q_number"]))]
+        drafts = [
+            d for d in drafts
+            if not d.get("needs_visual")
+            or visual_map.get((d["source"], int(d["source_q_number"]), int(d.get("first_page", -1))))
+        ]
         skipped = before - len(drafts)
         if skipped:
             print(f"Dropped {skipped} needs_visual questions without filled-in visual data.")

@@ -36,6 +36,11 @@ export function gradeAnswer(question, userAnswer) {
       correct = arraysEqual(question.correct_order, actual);
       break;
     }
+    case "ordering_select": {
+      // Pick N items from a pool of M, in the correct order.
+      correct = arraysEqual(question.correct_order, actual);
+      break;
+    }
     case "matching": {
       const expected = question.correct_matching || {};
       const actualMap = (actual && typeof actual === "object" && !Array.isArray(actual)) ? actual : {};
@@ -61,6 +66,8 @@ export function expectedAnswer(question) {
       return [...(question.correct || [])];
     case "ordering":
       return [...(question.correct_order || [])];
+    case "ordering_select":
+      return [...(question.correct_order || [])];
     case "matching":
       return { ...(question.correct_matching || {}) };
     default:
@@ -77,6 +84,9 @@ export function emptyAnswer(question) {
     case "ordering":
       // Default order = items as-given (we'll display shuffled separately).
       return (question.items || []).map((it) => it.id);
+    case "ordering_select":
+      // No picks yet.
+      return [];
     case "matching":
       return {};
     default:
@@ -95,6 +105,9 @@ export function isEmptyAnswer(question, ans) {
     // We can't easily mark "untouched" — treat as answered when an array is present.
     return !Array.isArray(ans) || ans.length === 0;
   }
+  if (question.type === "ordering_select") {
+    return !Array.isArray(ans) || ans.length === 0;
+  }
   if (question.type === "matching") {
     if (!ans || typeof ans !== "object" || Array.isArray(ans)) return true;
     const rowIds = (question.rows || []).map((r) => r.id);
@@ -108,6 +121,11 @@ function optText(question, optId) {
   return opt ? (opt.text || optId) : optId;
 }
 
+function poolText(question, optId) {
+  const opt = (question.pool || []).find((o) => String(o.id) === String(optId));
+  return opt ? (opt.text || optId) : optId;
+}
+
 export function formatAnswer(question, ans) {
   if (ans == null) return "(no answer)";
   switch (question.type) {
@@ -117,6 +135,10 @@ export function formatAnswer(question, ans) {
       return Array.isArray(ans) && ans.length ? [...ans].sort().join(", ") : "(none)";
     case "ordering":
       return Array.isArray(ans) ? ans.join(" → ") : "(no answer)";
+    case "ordering_select":
+      return Array.isArray(ans) && ans.length
+        ? ans.map((id) => poolText(question, id)).join(" → ")
+        : "(no answer)";
     case "matching": {
       if (!ans || typeof ans !== "object" || Array.isArray(ans)) return "(no answer)";
       const parts = (question.rows || []).map((r) => {

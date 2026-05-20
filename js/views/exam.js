@@ -168,6 +168,77 @@ function renderOrdering(question, displayOrder, currentAnswer, onAnswer) {
   return el("div", {}, ul, hint);
 }
 
+function renderOrderingSelect(question, currentAnswer, onAnswer) {
+  // currentAnswer is an array of pool ids in user-chosen order.
+  const picks = Array.isArray(currentAnswer) ? [...currentAnswer] : [];
+  const pool = question.pool || [];
+  const poolMap = new Map(pool.map((p) => [p.id, p]));
+  const targetLen = (question.correct_order || []).length || picks.length || pool.length;
+
+  const wrap = el("div", { class: "ordering-select" });
+
+  // Numbered slots (the user's current sequence).
+  const slotsHeader = el(
+    "div",
+    { class: "muted", style: "font-size:0.9rem;margin-bottom:0.4rem;" },
+    `Pick ${targetLen} in order. Click an item below to add it; click a slot to remove.`
+  );
+  wrap.appendChild(slotsHeader);
+
+  const slots = el("ol", { class: "ordering-list" });
+  for (let i = 0; i < targetLen; i++) {
+    const picked = picks[i];
+    const item = picked != null ? poolMap.get(picked) : null;
+    const li = el(
+      "li",
+      {
+        class: "ordering-item" + (picked ? "" : " empty"),
+        onclick: () => {
+          if (picked == null) return;
+          picks.splice(i, 1);
+          onAnswer([...picks]);
+        },
+      },
+      el("span", { class: "num" }, `${i + 1}.`),
+      el("span", { class: "opt-body" }, item ? item.text || item.id : "—")
+    );
+    slots.appendChild(li);
+  }
+  wrap.appendChild(slots);
+
+  // Pool of items the user picks from. Already-picked items show as disabled.
+  const pickedSet = new Set(picks);
+  const poolHeader = el(
+    "div",
+    { class: "muted", style: "font-size:0.85rem;margin-top:0.75rem;margin-bottom:0.4rem;" },
+    "Available actions"
+  );
+  wrap.appendChild(poolHeader);
+  const poolList = el("div", { class: "options" });
+  for (const item of pool) {
+    const used = pickedSet.has(item.id);
+    const optionEl = el(
+      "label",
+      {
+        class: "option" + (used ? " expected" : ""),
+        style: used ? "opacity:0.45; cursor:not-allowed;" : "",
+        onclick: () => {
+          if (used) return;
+          if (picks.length >= targetLen) return;
+          picks.push(item.id);
+          onAnswer([...picks]);
+        },
+      },
+      el("span", { class: "opt-id" }, `${item.id}.`),
+      el("span", { class: "opt-body" }, item.text || "")
+    );
+    poolList.appendChild(optionEl);
+  }
+  wrap.appendChild(poolList);
+
+  return wrap;
+}
+
 function optionsForRow(question, row) {
   const all = question.options || [];
   if (Array.isArray(row.options) && row.options.length) {
@@ -223,6 +294,8 @@ function questionInputForType(question, displayOrder, currentAnswer, onAnswer) {
       return renderMultiSelect(question, currentAnswer, onAnswer);
     case "ordering":
       return renderOrdering(question, displayOrder || [], currentAnswer, onAnswer);
+    case "ordering_select":
+      return renderOrderingSelect(question, currentAnswer, onAnswer);
     case "matching":
       return renderMatching(question, currentAnswer, onAnswer);
     default:

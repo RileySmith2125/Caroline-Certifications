@@ -74,6 +74,9 @@ class QuestionDraft:
     explanation: str = ""
     reference: str = ""
     community_vote: str = ""
+    # ordering_select-only: pool of items and the correct subset-in-order
+    pool: list[dict] = field(default_factory=list)
+    correct_order: list[str] = field(default_factory=list)
 
 
 # ---------- helpers ----------
@@ -89,12 +92,10 @@ def detect_canonical_type(raw_type: str, options: list[dict]) -> tuple[str, bool
         return "matching", True
     if r in {"SIMULATION"}:
         return "simulation", True
-    # ORDERLIST (s1): user picks N items from a list of M in a specific order. The
-    # existing `ordering` schema expects a full reordering of all items, not a
-    # subset, so we collapse to multi_select (order is lost but the right picks
-    # still grade correctly).
+    # ORDERLIST (s1): user picks N items from a list of M in a specific order.
+    # Maps to `ordering_select` so the order is preserved in grading.
     if r in {"ORDERLIST", "ORDER LIST"}:
-        return "multi_select", False
+        return "ordering_select", False
     if r in {"MULTI SELECT", "MULTIPLE SELECT", "MULTISELECT"}:
         return "multi_select", False
     if r in {"SINGLE SELECT", "SINGLE CHOICE", "MULTIPLE CHOICE"}:
@@ -224,7 +225,7 @@ def parse_s1_block(
         canonical_type = "multi_select"
 
     explanation = "\n".join(explanation_lines).strip()
-    return QuestionDraft(
+    draft = QuestionDraft(
         source="s1",
         source_q_number=qnum,
         first_page=first_page,
@@ -239,6 +240,12 @@ def parse_s1_block(
         reference=extract_reference(explanation),
         community_vote="",
     )
+    # ordering_select: stash the pool + correct sequence so build_bundle can
+    # emit pool/correct_order without re-thinking the source extraction.
+    if canonical_type == "ordering_select":
+        draft.pool = [{"id": o["id"], "text": o["text"]} for o in options]
+        draft.correct_order = list(correct)
+    return draft
 
 
 # ---------- s2 (ExamTopics format) ----------

@@ -203,8 +203,18 @@ button.ghost  { background: transparent; }
 .ordering-item:active { cursor: grabbing; }
 .ordering-item.dragging { opacity: 0.4; }
 .ordering-item.drop-target { border-color: var(--accent); }
+.ordering-item.empty {
+  cursor: default;
+  border-style: dashed;
+  color: var(--muted);
+}
+.ordering-item.correct { border-color: var(--good); }
+.ordering-item.wrong   { border-color: var(--bad); }
 .ordering-item .grip { color: var(--muted); width: 1rem; text-align: center; }
 .ordering-item .num { font-weight: 600; min-width: 1.2rem; }
+
+.ordering-select .ordering-item { cursor: pointer; }
+.ordering-select .ordering-item.empty { cursor: default; }
 
 /* Matching */
 .matching { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.75rem; }
