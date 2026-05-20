@@ -10,10 +10,11 @@ import {
   saveExamRun,
 } from "./db.js";
 import { pickQuestions } from "./selection.js";
+import { isDue, dueAtMs } from "./srs.js";
 import { emptyAnswer, gradeAnswer, isEmptyAnswer } from "./grading.js";
 
 const SESSION_KEY = "exam.currentRun";
-const EXAM_SIZE = 30;
+const EXAM_SIZE = 20;
 
 function shuffle(arr) {
   const copy = [...arr];
@@ -46,6 +47,23 @@ export async function startExam(bundle, size = EXAM_SIZE) {
   const progress = await getAllProgress();
   const examCount = await getExamCount();
   const picked = pickQuestions(bundle.questions, progress, examCount, size);
+  return persistRun(picked);
+}
+
+// Pulls only currently-due cards, most-overdue first. Used for the
+// "Start review" CTA on the dashboard. Returns null when nothing's due.
+export async function startReviewSession(bundle, size = EXAM_SIZE) {
+  const progress = await getAllProgress();
+  const now = Date.now();
+  const dueQs = bundle.questions
+    .filter((q) => isDue(progress.get(q.id), now))
+    .sort((a, b) => dueAtMs(progress.get(a.id)) - dueAtMs(progress.get(b.id)));
+  if (!dueQs.length) return null;
+  const picked = dueQs.slice(0, size);
+  return persistRun(picked);
+}
+
+function persistRun(picked) {
   const state = {
     run_id: `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     started_at: new Date().toISOString(),
@@ -58,11 +76,21 @@ export async function startExam(bundle, size = EXAM_SIZE) {
         .map((q) => [q.id, shuffle((q.items || []).map((it) => it.id))])
     ),
     answers: {},
+    flags: {},
     cursor: 0,
   };
   saveCurrentRun(state);
   return state;
 }
+
+export function toggleFlag(state, qid) {
+  if (!state.flags) state.flags = {};
+  if (state.flags[qid]) delete state.flags[qid];
+  else state.flags[qid] = true;
+  saveCurrentRun(state);
+}
+
+
 
 export function answer(state, qid, value) {
   state.answers[qid] = value;

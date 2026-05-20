@@ -53,29 +53,31 @@ function reviewMatching(question, userAnswer) {
   const ans =
     userAnswer && typeof userAnswer === "object" && !Array.isArray(userAnswer) ? userAnswer : {};
   const optMap = new Map((question.options || []).map((o) => [String(o.id), o]));
-  const wrap = el("div", { class: "options" });
+  const wrap = el("div", { class: "review-rows" });
   for (const row of question.rows || []) {
     const userOpt = ans[row.id];
     const correctOpt = expected[row.id];
     const isCorrect = userOpt != null && String(userOpt) === String(correctOpt);
-    const cls = ["option"];
-    cls.push(isCorrect ? "correct" : "wrong");
     const userText = userOpt ? (optMap.get(String(userOpt))?.text || userOpt) : "(no answer)";
     const correctText = correctOpt
       ? (optMap.get(String(correctOpt))?.text || correctOpt)
       : "(unknown)";
-    const body = el(
-      "div",
-      { class: "opt-body" },
-      el("strong", {}, row.label || row.id),
-      el("div", { style: "margin-top:0.2rem;" },
-        el("span", { class: "lbl" }, "Your: "), userText
-      ),
-      !isCorrect
-        ? el("div", {}, el("span", { class: "lbl" }, "Correct: "), correctText)
-        : null
+
+    const answerCell = el("div", { class: "review-row-answer" },
+      el("span", { class: "lbl" }, "Your: "),
+      el("strong", {}, userText),
+      el("span", { class: "lbl", style: "margin-left:12px;" }, "Correct: "),
+      el("strong", {}, correctText)
     );
-    wrap.appendChild(el("div", { class: cls.join(" ") }, body));
+
+    wrap.appendChild(
+      el(
+        "div",
+        { class: `review-row ${isCorrect ? "correct" : "wrong"}` },
+        el("div", { class: "review-row-label" }, row.label || row.id),
+        answerCell
+      )
+    );
   }
   return wrap;
 }
@@ -123,6 +125,45 @@ export async function renderResults(root, bundle, runId) {
     return;
   }
 
+  const statusFor = (item) => (!item.answered ? "skip" : item.correct ? "correct" : "wrong");
+
+  // -------- Sidebar — verdict-coded question map --------
+  const qmap = el("div", { class: "qmap" });
+  run.items.forEach((item, idx) => {
+    const status = statusFor(item);
+    qmap.appendChild(
+      el(
+        "button",
+        {
+          class: `cell ${status}`,
+          title: `Q${idx + 1} — ${status}`,
+          onclick: () => {
+            const target = document.getElementById(`q-${idx + 1}`);
+            if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+          },
+        },
+        String(idx + 1)
+      )
+    );
+  });
+
+  const legend = el(
+    "div",
+    { class: "legend" },
+    el("span", { class: "pill dot good" }, "correct"),
+    el("span", { class: "pill dot bad" }, "wrong"),
+    el("span", { class: "pill dot warn" }, "skipped")
+  );
+
+  const side = el(
+    "aside",
+    { class: "exam-side stack-sm" },
+    el("div", { class: "eyebrow" }, `Review · ${run.items.length} questions`),
+    qmap,
+    legend
+  );
+
+  // -------- Main column --------
   const pct = run.total ? Math.round((run.score / run.total) * 100) : 0;
   const banner = el(
     "div",
@@ -149,7 +190,9 @@ export async function renderResults(root, bundle, runId) {
       )
     )
   );
-  root.appendChild(banner);
+
+  const main = el("div", { class: "exam-main stack" });
+  main.appendChild(banner);
 
   for (let idx = 0; idx < run.items.length; idx++) {
     const item = run.items[idx];
@@ -160,7 +203,7 @@ export async function renderResults(root, bundle, runId) {
       status === "skipped" ? "○ Skipped" : status === "correct" ? "✓ Correct" : "✗ Incorrect";
     const verdictClass =
       status === "skipped" ? "skip" : status === "correct" ? "ok" : "bad";
-    const card = el("div", { class: `review-q ${status}` });
+    const card = el("div", { class: `review-q ${status}`, id: `q-${idx + 1}` });
     card.appendChild(
       el(
         "div",
@@ -184,29 +227,32 @@ export async function renderResults(root, bundle, runId) {
     } else {
       card.appendChild(reviewOptions(q, item.user_answer));
     }
-    card.appendChild(
-      el(
-        "div",
-        { class: "answer-row", style: "margin-top:0.6rem;" },
-        el("span", { class: "lbl" }, "Your answer:"),
-        formatAnswer(q, item.user_answer)
-      )
-    );
-    if (!item.correct && q.type !== "matching" && q.type !== "ordering_select" && q.type !== "ordering") {
-      // matching / ordering* views show per-row / per-position correct answers inline above
+    if (q.type !== "matching" && q.type !== "ordering" && q.type !== "ordering_select") {
       card.appendChild(
         el(
           "div",
-          { class: "answer-row" },
-          el("span", { class: "lbl" }, "Correct answer:"),
-          formatAnswer(q, q.correct)
+          { class: "answer-row", style: "margin-top:0.6rem;" },
+          el("span", { class: "lbl" }, "Your answer:"),
+          formatAnswer(q, item.user_answer)
         )
       );
+      if (!item.correct) {
+        card.appendChild(
+          el(
+            "div",
+            { class: "answer-row" },
+            el("span", { class: "lbl" }, "Correct answer:"),
+            formatAnswer(q, q.correct)
+          )
+        );
+      }
     }
     if (q.explanation) {
       card.appendChild(el("hr"));
       card.appendChild(el("div", { class: "muted" }, q.explanation));
     }
-    root.appendChild(card);
+    main.appendChild(card);
   }
+
+  root.appendChild(el("div", { class: "exam-shell" }, side, main));
 }

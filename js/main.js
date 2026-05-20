@@ -26,9 +26,17 @@ function clear() {
   root.innerHTML = "";
 }
 
+function updateNav(path) {
+  document.querySelectorAll(".topbar .nav a, .app-header .app-nav a").forEach((a) => {
+    const r = a.getAttribute("data-route");
+    if (r != null) a.classList.toggle("on", r === path);
+  });
+}
+
 async function route() {
   const hash = window.location.hash || "#/";
   const [, path, ...rest] = hash.split("/");
+  updateNav(path || "");
   try {
     const b = await ensureBundle();
     clear();

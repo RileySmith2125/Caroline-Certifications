@@ -6,7 +6,57 @@ import {
   prev,
   startExam,
   submitExam,
+  toggleFlag,
 } from "../exam.js";
+
+let _lastSaved = Date.now();
+let _autosaveTimer = null;
+function markSaved() { _lastSaved = Date.now(); }
+function autosaveText() {
+  const seconds = Math.floor((Date.now() - _lastSaved) / 1000);
+  if (seconds < 1) return "Autosaved just now";
+  return `Autosaved ${seconds}s ago`;
+}
+
+function isTypingTarget(t) {
+  if (!t || !t.tagName) return false;
+  const tag = t.tagName.toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!t.isContentEditable;
+}
+
+function clickAction(name) {
+  const root = document.getElementById("view");
+  if (!root) return false;
+  const btn = root.querySelector(`[data-action="${name}"]`);
+  if (!btn || btn.disabled) return false;
+  btn.click();
+  return true;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!window.location.hash.startsWith("#/exam")) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (isTypingTarget(e.target)) return;
+
+  const key = e.key;
+  if (key === "ArrowLeft") {
+    if (clickAction("prev")) e.preventDefault();
+  } else if (key === "ArrowRight" || key === "Enter") {
+    if (clickAction("next")) e.preventDefault();
+  } else if (key === "f" || key === "F") {
+    if (clickAction("flag")) e.preventDefault();
+  } else if (/^[1-9]$/.test(key)) {
+    const idx = parseInt(key, 10) - 1;
+    const root = document.getElementById("view");
+    if (!root) return;
+    const options = root.querySelectorAll(".question .options > .option");
+    if (idx < options.length) {
+      options[idx].click();
+      e.preventDefault();
+    }
+  }
+});
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -308,28 +358,100 @@ export async function renderExam(root, bundle) {
   if (!state) {
     state = await startExam(bundle);
   }
+  if (!state.flags) state.flags = {};
   paint(root, bundle, state);
 }
 
 function paint(root, bundle, state) {
   root.innerHTML = "";
+  if (_autosaveTimer) {
+    clearInterval(_autosaveTimer);
+    _autosaveTimer = null;
+  }
 
   const total = state.question_ids.length;
   const i = state.cursor;
   const qid = state.question_ids[i];
   const question = bundle._byId.get(qid);
-
-  // progress bar (answered count, not just cursor)
   const answeredCount = state.question_ids.filter((id) => state.answers[id] != null).length;
+  const isFlagged = !!state.flags[qid];
 
-  const head = el(
+  // -------- Sidebar --------
+  const qmap = el("div", { class: "qmap" });
+  state.question_ids.forEach((id, idx) => {
+    const classes = ["cell"];
+    if (state.answers[id] != null) classes.push("done");
+    if (idx === i) classes.push("cur");
+    if (state.flags[id]) classes.push("flag");
+    qmap.appendChild(
+      el(
+        "button",
+        {
+          class: classes.join(" "),
+          title: `Q${idx + 1}`,
+          onclick: () => {
+            goTo(state, idx);
+            paint(root, bundle, state);
+          },
+        },
+        String(idx + 1)
+      )
+    );
+  });
+
+  const legend = el(
     "div",
-    { class: "exam-progress" },
-    el("div", {}, `Question ${i + 1} of ${total}`),
-    el("div", { class: "bar" }, el("div", { style: `width:${(answeredCount / total) * 100}%` })),
-    el("div", { class: "muted" }, `${answeredCount} answered`)
+    { class: "legend" },
+    el("span", { class: "pill dot accent" }, "current"),
+    el("span", { class: "pill dot good" }, "answered"),
+    el("span", { class: "pill dot warn" }, "flagged")
   );
 
+  const side = el(
+    "aside",
+    { class: "exam-side stack-sm" },
+    el("div", { class: "eyebrow" }, `Run · ${total} questions`),
+    qmap,
+    legend
+  );
+
+  // -------- Main column --------
+  // Meta strip
+  const flagBtn = el(
+    "button",
+    {
+      class: "ghost",
+      "data-action": "flag",
+      onclick: () => {
+        toggleFlag(state, qid);
+        paint(root, bundle, state);
+      },
+    },
+    isFlagged ? "★ Flagged " : "☆ Flag ",
+    el("span", { class: "kbd" }, "F")
+  );
+  const metaStrip = el(
+    "div",
+    { class: "meta-strip row sb" },
+    el(
+      "div",
+      { class: "muted mono", style: "font-size:12px;" },
+      `Question ${i + 1}/${total}`,
+      el("span", { class: "sep" }, " · "),
+      qid
+    ),
+    flagBtn
+  );
+
+  // Progress bar
+  const progressNode = el(
+    "div",
+    { class: "exam-progress" },
+    el("div", { class: "bar" }, el("div", { style: `width:${(answeredCount / total) * 100}%` })),
+    el("div", { class: "muted mono", style: "font-size:11px;" }, `${answeredCount} answered`)
+  );
+
+  // Question card
   const stemNodes = renderStem(question);
   const inputNode = questionInputForType(
     question,
@@ -337,32 +459,17 @@ function paint(root, bundle, state) {
     state.answers[qid],
     (val) => {
       answer(state, qid, val);
-      // re-paint progress count without losing input focus -> re-render entirely is fine here
-      // (radio/check focus is preserved by the browser's defaults usually)
+      markSaved();
       paint(root, bundle, state);
     }
   );
-
   const card = el("div", { class: "question" }, ...stemNodes, inputNode);
 
-  // Bottom controls
-  const jump = el("select", {
-    onchange: (e) => {
-      goTo(state, parseInt(e.target.value, 10));
-      paint(root, bundle, state);
-    },
-  });
-  state.question_ids.forEach((id, idx) => {
-    const ans = state.answers[id];
-    const tag = ans != null ? "✓" : "○";
-    const opt = el("option", { value: idx }, `${tag} Q${idx + 1}`);
-    if (idx === i) opt.selected = true;
-    jump.appendChild(opt);
-  });
-
+  // Footer
   const prevBtn = el(
     "button",
     {
+      "data-action": "prev",
       onclick: () => {
         prev(state);
         paint(root, bundle, state);
@@ -375,6 +482,7 @@ function paint(root, bundle, state) {
   const nextBtn = el(
     "button",
     {
+      "data-action": "next",
       onclick: () => {
         next(state);
         paint(root, bundle, state);
@@ -383,6 +491,20 @@ function paint(root, bundle, state) {
     "Next →"
   );
   if (i === total - 1) nextBtn.disabled = true;
+
+  const autosaveIndicator = el(
+    "span",
+    { class: "muted mono", style: "font-size:11px;" },
+    autosaveText()
+  );
+  _autosaveTimer = setInterval(() => {
+    if (!document.body.contains(autosaveIndicator)) {
+      clearInterval(_autosaveTimer);
+      _autosaveTimer = null;
+      return;
+    }
+    autosaveIndicator.textContent = autosaveText();
+  }, 1000);
 
   const submitBtn = el(
     "button",
@@ -395,8 +517,9 @@ function paint(root, bundle, state) {
             !confirm(
               `${unanswered.length} question${unanswered.length === 1 ? "" : "s"} unanswered. Submit anyway?`
             )
-          )
+          ) {
             return;
+          }
         }
         submitBtn.disabled = true;
         const run = await submitExam(state, bundle);
@@ -406,14 +529,15 @@ function paint(root, bundle, state) {
     "Submit exam"
   );
 
-  const bottom = el(
+  const footer = el(
     "div",
-    { class: "exam-bottom" },
+    { class: "exam-footer row sb" },
     el("div", { class: "row" }, prevBtn, nextBtn),
-    jump,
-    submitBtn
+    el("div", { class: "row" }, autosaveIndicator, submitBtn)
   );
 
-  const wrap = el("div", {}, head, card, bottom);
-  root.appendChild(wrap);
+  const main = el("div", { class: "exam-main stack" }, metaStrip, progressNode, card, footer);
+
+  // -------- Shell --------
+  root.appendChild(el("div", { class: "exam-shell" }, side, main));
 }

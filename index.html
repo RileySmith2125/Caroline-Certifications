@@ -4,25 +4,27 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Caroline Cert Practice</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <header class="app-header">
-      <span class="brand">Caroline Cert Practice</span>
+    <header class="topbar">
+      <span class="brand">Cert Practice</span>
+      <span class="right muted mono">local-only · <span id="picker-date"></span></span>
     </header>
-    <main class="view">
+    <main class="view picker">
+      <div class="eyebrow">Choose an exam</div>
       <h1>Pick an exam</h1>
-      <p class="muted">Each exam keeps its own question pool and progress.</p>
-      <div class="exam-picker">
-        <a class="exam-card" href="pl200/">
-          <div class="code">PL-200</div>
-          <div class="name">Microsoft Power Platform Functional Consultant</div>
-        </a>
-        <a class="exam-card" href="mb330/">
-          <div class="code">MB-330</div>
-          <div class="name">Microsoft Dynamics 365 Supply Chain Management Functional Consultant</div>
-        </a>
+      <p class="lede muted">
+        Each exam has its own pool, progress, and spaced-repetition queue.
+      </p>
+      <div id="exam-cards" class="exam-picker">
+        <div class="loading">Loading exams…</div>
       </div>
+      <p class="muted mono picker-hint">? Add a new exam by dropping a bundle in <code>/data</code>.</p>
     </main>
+    <script type="module" src="js/picker.js"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 // Tiny Promise-based IndexedDB wrapper plus bundle loader.
+import { nextScheduleFor, nextMastery } from "./srs.js";
 //
 // Each entry HTML (pl200/index.html, mb330/index.html, …) sets a global
 // `window.__EXAM = { id, title, dataPath, imageBase }` before this module loads.
@@ -148,11 +149,17 @@ export async function recordAnswer(qid, isCorrect, examCount) {
     last_seen_exam: null,
     last_seen_at: null,
   };
+  const now = Date.now();
+  const schedule = nextScheduleFor(existing, !!isCorrect, now);
   existing.attempts += 1;
   if (isCorrect) existing.correct += 1;
   existing.last_correct = !!isCorrect;
   existing.last_seen_exam = examCount;
-  existing.last_seen_at = new Date().toISOString();
+  existing.last_seen_at = new Date(now).toISOString();
+  existing.box = schedule.box;
+  existing.interval_days = schedule.interval_days;
+  existing.next_due_at = schedule.next_due_at;
+  existing.mastery = nextMastery(existing.mastery, !!isCorrect);
   store.put(existing);
   await done;
   return existing;

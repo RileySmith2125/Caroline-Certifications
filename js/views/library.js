@@ -7,6 +7,39 @@ import {
   recordAnswer,
 } from "../db.js";
 import { emptyAnswer, formatAnswer, gradeAnswer, isEmptyAnswer } from "../grading.js";
+import { isDue, dueAtMs, MASTERY_THRESHOLD } from "../srs.js";
+
+function isTypingTarget(t) {
+  if (!t || !t.tagName) return false;
+  const tag = t.tagName.toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!t.isContentEditable;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!window.location.hash.startsWith("#/library")) return;
+  if (e.altKey) return;
+  // Cmd/Ctrl+K → focus the library search.
+  if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+    const input = document.getElementById("lib-search");
+    if (input) {
+      input.focus();
+      input.select();
+      e.preventDefault();
+    }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey) return;
+  // "/" → focus search (unless already typing in something).
+  if (e.key === "/" && !isTypingTarget(e.target)) {
+    const input = document.getElementById("lib-search");
+    if (input) {
+      input.focus();
+      input.select();
+      e.preventDefault();
+    }
+  }
+});
 
 const FILTER_KEY = "library.filter";
 
@@ -35,65 +68,121 @@ function statusFor(p) {
   return p.last_correct ? "correct" : "wrong";
 }
 
+function masteryPctStr(p) {
+  if (!p || typeof p.mastery !== "number") return "—";
+  return `${Math.round(p.mastery * 100)}%`;
+}
+
+function isMastered(p) {
+  return p && typeof p.mastery === "number" && p.mastery > MASTERY_THRESHOLD;
+}
+
 export async function renderLibrary(root, bundle) {
   const progress = await getAllProgress();
+  const now = Date.now();
 
-  const counts = { all: bundle.questions.length, unanswered: 0, correct: 0, wrong: 0 };
+  const counts = { all: bundle.questions.length, unanswered: 0, correct: 0, wrong: 0, due: 0, mastered: 0 };
   for (const q of bundle.questions) {
-    const s = statusFor(progress.get(q.id));
+    const p = progress.get(q.id);
+    const s = statusFor(p);
     counts[s] += 1;
+    if (isDue(p, now)) counts.due += 1;
+    if (isMastered(p)) counts.mastered += 1;
   }
 
   let filter = sessionStorage.getItem(FILTER_KEY) || "all";
+  let query = "";
 
-  const wrap = el("div", {});
-  wrap.appendChild(el("h1", {}, "All questions"));
-  wrap.appendChild(
+  const wrap = el("div", { class: "stack" });
+
+  // Header block
+  const head = el("div", { class: "lib-head" });
+  const headTop = el("div", { class: "row sb wrap" });
+  const headLeft = el("div", { class: "stack-xs" });
+  headLeft.appendChild(el("div", { class: "eyebrow" }, `Question library · ${bundle.title || "Practice"}`));
+  headLeft.appendChild(el("h1", {}, "All questions"));
+  headLeft.appendChild(
     el(
-      "p",
-      { class: "muted" },
-      `${counts.correct} mastered · ${counts.wrong} wrong · ${counts.unanswered} unanswered`
+      "div",
+      { class: "muted", style: "font-size:13px;" },
+      `${counts.mastered} mastered · ${counts.wrong} wrong · ${counts.unanswered} unattempted · ${counts.due} due`
     )
   );
+  const searchInput = el("input", {
+    type: "search",
+    class: "lib-search",
+    id: "lib-search",
+    placeholder: "Search stems…  /",
+    oninput: (e) => {
+      query = e.target.value.trim().toLowerCase();
+      rebuild();
+    },
+    onkeydown: (e) => {
+      if (e.key === "Escape") {
+        e.target.value = "";
+        query = "";
+        e.target.blur();
+        rebuild();
+      }
+    },
+  });
+  headTop.appendChild(headLeft);
+  headTop.appendChild(searchInput);
+  head.appendChild(headTop);
+  wrap.appendChild(head);
 
-  const filters = el("div", { class: "filters" });
-  function chip(name, label, count) {
-    const b = el(
+  // Filter chips
+  const filters = el("div", { class: "chips" });
+  function makeChip(name, label, count) {
+    return el(
       "button",
       {
-        class: filter === name ? "active" : "",
+        class: `chip${filter === name ? " active" : ""}`,
         onclick: () => {
           filter = name;
           sessionStorage.setItem(FILTER_KEY, filter);
           rebuild();
         },
       },
-      `${label} (${count})`
+      label,
+      " ",
+      el("span", { class: "count" }, `(${count})`)
     );
-    return b;
   }
 
   function rebuild() {
     filters.innerHTML = "";
-    filters.appendChild(chip("all", "All", counts.all));
-    filters.appendChild(chip("unanswered", "Unanswered", counts.unanswered));
-    filters.appendChild(chip("wrong", "Wrong", counts.wrong));
-    filters.appendChild(chip("correct", "Correct", counts.correct));
+    filters.appendChild(makeChip("all", "All", counts.all));
+    filters.appendChild(makeChip("due", "Due", counts.due));
+    filters.appendChild(makeChip("unanswered", "Unattempted", counts.unanswered));
+    filters.appendChild(makeChip("wrong", "Wrong", counts.wrong));
+    filters.appendChild(makeChip("mastered", "Mastered", counts.mastered));
 
     grid.innerHTML = "";
     for (const q of bundle.questions) {
-      const s = statusFor(progress.get(q.id));
-      if (filter !== "all" && s !== filter) continue;
+      const p = progress.get(q.id);
+      const s = statusFor(p);
+      const matches =
+        filter === "all"
+          ? true
+          : filter === "due"
+          ? isDue(p, now)
+          : filter === "mastered"
+          ? isMastered(p)
+          : s === filter;
+      if (!matches) continue;
+      if (query && !((q.stem || "").toLowerCase().includes(query) || q.id.toLowerCase().includes(query))) continue;
       const cell = el(
         "div",
         {
           class: `lib-cell ${s}`,
-          title: `${q.id} — ${s}`,
+          title: `${q.id} — ${s} · mastery ${masteryPctStr(p)}`,
           onclick: () => {
             window.location.hash = `#/library/${encodeURIComponent(q.id)}`;
           },
         },
-        q.id
+        el("span", { class: "lib-cell-id" }, q.id),
+        el("span", { class: "lib-cell-mastery" }, masteryPctStr(p))
       );
       grid.appendChild(cell);
     }
@@ -391,40 +480,66 @@ export async function renderLibraryQuestion(root, bundle, qidEncoded) {
   }
 
   const state = {
-    userAnswer: question.type === "ordering" ? null : null,
+    userAnswer: null,
     checked: false,
     result: null,
     progress: await getProgress(qid),
+    prevInterval: null, // interval_days captured before grading, for the verdict subtitle
   };
+
+  function duePill(p) {
+    if (!p || (p.attempts | 0) === 0) {
+      return el("span", { class: "pill" }, "Unseen");
+    }
+    const dueMs = dueAtMs(p);
+    const now = Date.now();
+    const gapDays = Math.round((dueMs - now) / (24 * 60 * 60 * 1000));
+    if (dueMs <= now) {
+      return el("span", { class: "pill accent dot" }, "Due now");
+    }
+    if (gapDays <= 1) return el("span", { class: "pill" }, "Due tomorrow");
+    return el("span", { class: "pill" }, `Due in ${gapDays}d`);
+  }
 
   async function paint() {
     root.innerHTML = "";
 
-    const navBar = el(
-      "div",
-      { class: "row", style: "justify-content:space-between;margin-bottom:0.75rem;" },
+    // Practice head
+    root.appendChild(
       el(
-        "a",
-        { href: "#/library" },
-        "← All questions"
-      ),
-      el("span", { class: "muted" }, qid)
+        "div",
+        { class: "practice-head" },
+        el("a", { href: "#/library", class: "muted" }, "← All questions"),
+        el("span", { class: "muted mono" }, qid)
+      )
     );
-    root.appendChild(navBar);
 
+    // Progress banner (only if attempted)
     if (state.progress && state.progress.attempts > 0) {
       const p = state.progress;
       const lastIcon = p.last_correct ? "✓" : "✗";
       const lastClass = p.last_correct ? "ok" : "bad";
-      const banner = el(
-        "div",
-        { class: "row progress-banner", style: "justify-content:space-between;margin-bottom:0.75rem;" },
+      const accuracy = p.attempts > 0 ? Math.round((p.correct / p.attempts) * 100) : 0;
+
+      const banner = el("div", { class: "progress-banner row sb" });
+      banner.appendChild(
         el(
           "div",
-          { class: "muted" },
+          { class: "muted", style: "font-size:13px;" },
           el("span", { class: `verdict ${lastClass}` }, `${lastIcon} `),
-          `Last attempt ${p.last_correct ? "correct" : "wrong"} · ${p.attempts} ${p.attempts === 1 ? "attempt" : "attempts"} (${p.correct} correct)`
-        ),
+          `Last attempt ${p.last_correct ? "correct" : "wrong"} · ${p.attempts} ${p.attempts === 1 ? "attempt" : "attempts"} · mastery ${masteryPctStr(p)}`
+        )
+      );
+
+      const confbarWrap = el("div", { class: "confbar-wrap" });
+      const confbar = el("div", { class: "confbar" });
+      confbar.appendChild(el("div", { class: "cb-good", style: `width:${accuracy}%;` }));
+      confbar.appendChild(el("div", { class: "cb-bad", style: `width:${100 - accuracy}%;` }));
+      confbarWrap.appendChild(confbar);
+      confbarWrap.appendChild(el("span", { class: "muted mono", style: "font-size:11px;" }, `${accuracy}%`));
+      banner.appendChild(confbarWrap);
+
+      banner.appendChild(
         el(
           "button",
           {
@@ -439,12 +554,23 @@ export async function renderLibraryQuestion(root, bundle, qidEncoded) {
               await paint();
             },
           },
-          "Reset progress"
+          "Reset"
         )
       );
       root.appendChild(banner);
     }
 
+    // Qhead — "Question" eyebrow + due pill
+    root.appendChild(
+      el(
+        "div",
+        { class: "qhead row sb" },
+        el("span", { class: "eyebrow" }, "Question"),
+        duePill(state.progress)
+      )
+    );
+
+    // Question card
     const card = el("div", { class: "question" });
     card.appendChild(el("div", { class: "stem" }, question.stem || ""));
     if (question.stem_images && question.stem_images.length) {
@@ -457,62 +583,84 @@ export async function renderLibraryQuestion(root, bundle, qidEncoded) {
 
     if (state.checked) {
       const r = state.result;
-      const verdict = el(
+      const icon = r.correct ? "✓" : "✗";
+      const verdictClass = r.correct ? "ok" : "no";
+      const title = r.correct ? "Correct" : "Incorrect";
+
+      let subtitleText = "";
+      if (state.progress && state.progress.interval_days) {
+        const days = state.progress.interval_days;
+        const trans = state.prevInterval && state.prevInterval !== days
+          ? ` · interval ${state.prevInterval} → ${days} days`
+          : "";
+        subtitleText = `Reappears in ${days} ${days === 1 ? "day" : "days"}${trans}.`;
+      }
+
+      const showCorrectAnswer =
+        !r.correct &&
+        question.type !== "matching" &&
+        question.type !== "ordering" &&
+        question.type !== "ordering_select";
+
+      const verdictBody = el(
         "div",
-        {
-          class: "score-banner " + (r.correct ? "good" : "bad"),
-          style: "margin-top:1rem;",
-        },
+        { class: "verdict-text" },
+        el("div", { class: "verdict-title" }, title),
+        subtitleText
+          ? el("div", { class: "muted", style: "font-size:13px;margin-top:2px;" }, subtitleText)
+          : null,
         el(
           "div",
-          {},
-          el(
-            "div",
-            { class: "big" },
-            r.correct ? "✓ Correct" : "✗ Incorrect"
-          ),
-          el(
-            "div",
-            { class: "answer-row" },
-            el("span", { class: "lbl" }, "Your answer:"),
-            formatAnswer(question, state.userAnswer)
-          ),
-          !r.correct &&
-          question.type !== "matching" &&
-          question.type !== "ordering" &&
-          question.type !== "ordering_select"
-            ? el(
-                "div",
-                { class: "answer-row" },
-                el("span", { class: "lbl" }, "Correct answer:"),
-                formatAnswer(question, question.correct)
-              )
-            : null
+          { class: "answer-row" },
+          el("span", { class: "lbl" }, "Your answer:"),
+          formatAnswer(question, state.userAnswer)
+        ),
+        showCorrectAnswer
+          ? el(
+              "div",
+              { class: "answer-row" },
+              el("span", { class: "lbl" }, "Correct answer:"),
+              formatAnswer(question, question.correct)
+            )
+          : null
+      );
+
+      const verdictActions = el(
+        "div",
+        { class: "row" },
+        el(
+          "button",
+          {
+            class: "ghost",
+            onclick: () => {
+              state.userAnswer = null;
+              state.checked = false;
+              state.result = null;
+              paint();
+            },
+          },
+          "Try again"
         ),
         el(
-          "div",
-          { class: "row" },
-          el(
-            "button",
-            {
-              class: "primary",
-              onclick: () => {
-                state.userAnswer = null;
-                state.checked = false;
-                state.result = null;
-                paint();
-              },
-            },
-            "Try again"
-          ),
-          el(
-            "button",
-            { onclick: () => (window.location.hash = "#/library") },
-            "Back to library"
-          )
+          "button",
+          { class: "primary", onclick: () => (window.location.hash = "#/library") },
+          "Back to library"
         )
       );
-      root.appendChild(verdict);
+
+      root.appendChild(
+        el(
+          "div",
+          { class: `verdict-banner ${verdictClass}` },
+          el("div", { class: "ico" }, icon),
+          verdictBody,
+          verdictActions
+        )
+      );
+
+      if (question.explanation) {
+        root.appendChild(el("div", { class: "explain" }, question.explanation));
+      }
     } else {
       const submitBtn = el(
         "button",
@@ -529,6 +677,9 @@ export async function renderLibraryQuestion(root, bundle, qidEncoded) {
             state.result = result;
             // Only record progress when an actual answer was given.
             if (!skipped) {
+              state.prevInterval = state.progress && state.progress.interval_days
+                ? state.progress.interval_days
+                : null;
               const examCount = await getExamCount();
               await recordAnswer(qid, result.correct, examCount);
               state.progress = await getProgress(qid);

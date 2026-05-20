@@ -4,15 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MB-330 · Caroline Cert Practice</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
     <link rel="stylesheet" href="../app.css" />
   </head>
   <body>
-    <header class="app-header">
-      <a href="#/" class="brand">MB-330 Practice</a>
-      <nav class="app-nav">
-        <a href="#/">Dashboard</a>
-        <a href="#/library">All questions</a>
-        <a href="../">← Switch exam</a>
+    <header class="topbar">
+      <a href="#/" class="brand">
+        Cert Practice<span class="slash">/</span><span class="code">MB-330</span>
+      </a>
+      <nav class="nav">
+        <a href="#/" data-route="">Dashboard</a>
+        <a href="#/library" data-route="library">Library</a>
+        <a href="../" data-route="switch">Switch exam</a>
       </nav>
     </header>
     <main id="view" class="view">
